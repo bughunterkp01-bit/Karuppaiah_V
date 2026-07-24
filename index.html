@@ -213,7 +213,29 @@ section { margin-top: 1.5rem; }
 .visit-counter svg { width: 1rem; height: 1rem; color: var(--primary); }
 .visit-counter .count { color: var(--primary); font-weight: 600; }
 
-/* Contact form */
+/* Visitor log panel */
+.vlog-trigger {
+  background: none; border: none; cursor: pointer;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.7rem;
+  color: var(--muted-foreground); text-decoration: underline; opacity: 0.6;
+  transition: opacity 0.2s;
+}
+.vlog-trigger:hover { opacity: 1; color: var(--accent); }
+.vlog-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+  display: none; align-items: center; justify-content: center; z-index: 999; padding: 1rem;
+}
+.vlog-overlay.open { display: flex; }
+.vlog-panel {
+  background: var(--card, #13131f); border: 1px solid var(--border); border-radius: 0.75rem;
+  padding: 1.25rem; max-width: 32rem; width: 100%; max-height: 80vh; overflow-y: auto;
+  font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+}
+.vlog-panel h3 { color: var(--accent); margin: 0 0 0.75rem; font-size: 0.9rem; }
+.vlog-panel table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+.vlog-panel th, .vlog-panel td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border); color: var(--foreground); }
+.vlog-panel th { color: var(--muted-foreground); font-weight: 500; }
+.vlog-close { float: right; background: none; border: none; color: var(--muted-foreground); cursor: pointer; font-size: 1rem; }
 .contact-form { display: flex; flex-direction: column; gap: 0.875rem; margin-top: 1rem; }
 .form-group { display: flex; flex-direction: column; gap: 0.375rem; }
 .form-group label {
@@ -238,6 +260,24 @@ section { margin-top: 1.5rem; }
 .form-status { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; min-height: 1rem; }
 .form-status.success { color: var(--primary); }
 .form-status.error { color: var(--danger); }
+
+/* Admin visitor panel (hidden unless ?admin=secret is in the URL) */
+.admin-panel {
+  background: rgba(10,10,18,0.95); border-top: 1px solid var(--border);
+  padding: 2rem 0;
+}
+.admin-panel-header {
+  font-family: 'JetBrains Mono', monospace; font-size: 0.8rem;
+  color: var(--foreground); margin-bottom: 1rem;
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+}
+.admin-panel-count { color: var(--muted-foreground); font-size: 0.75rem; }
+.admin-panel-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 0.5rem; }
+.admin-panel-table { width: 100%; border-collapse: collapse; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; }
+.admin-panel-table th, .admin-panel-table td { padding: 0.5rem 0.875rem; text-align: left; white-space: nowrap; }
+.admin-panel-table th { color: var(--accent); border-bottom: 1px solid var(--border); font-weight: 600; }
+.admin-panel-table tr:nth-child(even) { background: rgba(255,255,255,0.02); }
+.admin-panel-table td { color: var(--foreground); border-bottom: 1px solid rgba(255,255,255,0.05); }
 </style>
 </head>
 <body>
@@ -617,6 +657,23 @@ section { margin-top: 1.5rem; }
   </div>
 </footer>
 
+<div id="adminPanel" class="admin-panel" style="display:none;">
+  <div class="container">
+    <div class="admin-panel-header">
+      <span class="text-accent">$</span> tail -n 50 visitor_log.txt
+      <span class="admin-panel-count">(<span id="adminTotalCount">0</span> total visits)</span>
+    </div>
+    <div class="admin-panel-table-wrap">
+      <table class="admin-panel-table">
+        <thead><tr><th>#</th><th>ip address</th><th>date & time</th></tr></thead>
+        <tbody id="adminPanelBody">
+          <tr><td colspan="3" style="color:var(--muted-foreground);">loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 <script>
 (function(){
@@ -652,24 +709,76 @@ section { margin-top: 1.5rem; }
     emailjsReady = true;
   }
 
-  /* ---------- Visitor counter (real cross-visitor count) ---------- */
+  /* =========================================================
+     Visitor log config (jsonbin.io) — stores IP + timestamp for
+     every visit, shows total count publicly in the footer, and
+     shows the full IP/time list ONLY when you open your site with
+     ?admin=YOUR_SECRET in the URL.
+     ========================================================= */
+  var JSONBIN_BIN_ID    = "6a63325ef5f4af5e29ba9d95";
+  var JSONBIN_MASTER_KEY = "$2a$10$mN8CS6uXb0DWj9tJx4cUMu9Dm/oevAjLw.yClc4Jb1LiD4EsvHtzq";
+  var ADMIN_SECRET       = "karuppaiah2026"; // change this, then use ?admin=your_new_word
+
+  var JSONBIN_BASE = "https://api.jsonbin.io/v3/b/" + JSONBIN_BIN_ID;
+
   (function(){
     var countEl = document.getElementById("visitCount");
-    fetch("https://countapi.mileshilliard.com/api/v1/hit/karuppaiahv-portfolio-2026-visits")
+
+    fetch("https://api.ipify.org?format=json")
       .then(function(r){ return r.json(); })
-      .then(function(data){
-        if (countEl) countEl.textContent = data.value;
-      })
+      .then(function(ipData){ return logVisit(ipData.ip); })
       .catch(function(err){
-        console.warn("Visitor counter API failed, using local fallback:", err);
-        // Fallback: local-only counter if the API is unreachable
-        var n = parseInt(localStorage.getItem("localVisitCount") || "0", 10) + 1;
-        localStorage.setItem("localVisitCount", n);
-        if (countEl) countEl.textContent = n + " (local)";
+        console.warn("Could not fetch visitor IP, logging as unknown:", err);
+        return logVisit("unknown");
       });
+
+    function logVisit(ip){
+      return fetch(JSONBIN_BASE + "/latest", { headers: { "X-Master-Key": JSONBIN_MASTER_KEY } })
+        .then(function(r){ return r.json(); })
+        .then(function(res){
+          var visits = (res.record && res.record.visits) ? res.record.visits : [];
+          visits.push({ ip: ip, time: new Date().toISOString() });
+          if (visits.length > 200) visits = visits.slice(visits.length - 200); // keep last 200
+          return fetch(JSONBIN_BASE, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "X-Master-Key": JSONBIN_MASTER_KEY },
+            body: JSON.stringify({ visits: visits })
+          }).then(function(){ return visits; });
+        })
+        .then(function(visits){
+          if (countEl) countEl.textContent = visits.length;
+          maybeShowAdminPanel(visits);
+        })
+        .catch(function(err){
+          console.error("Visitor log failed:", err);
+          if (countEl) countEl.textContent = "?";
+        });
+    }
+
+    function maybeShowAdminPanel(visits){
+      var params = new URLSearchParams(window.location.search);
+      if (params.get("admin") !== ADMIN_SECRET) return;
+
+      var panel = document.getElementById("adminPanel");
+      var body = document.getElementById("adminPanelBody");
+      var totalEl = document.getElementById("adminTotalCount");
+      if (!panel || !body) return;
+
+      panel.style.display = "block";
+      totalEl.textContent = visits.length;
+      body.innerHTML = "";
+
+      var ordered = visits.slice().reverse(); // most recent first
+      ordered.forEach(function(v, idx){
+        var tr = document.createElement("tr");
+        var localTime = new Date(v.time).toLocaleString();
+        tr.innerHTML = "<td>" + (idx + 1) + "</td><td>" + v.ip + "</td><td>" + localTime + "</td>";
+        body.appendChild(tr);
+      });
+    }
   })();
 
-  /* ---------- Email alert to owner with visitor IP ---------- */
+  /* ---------- Email alert to owner with visitor IP (optional, via EmailJS) ---------- */
   (function(){
     fetch("https://api.ipify.org?format=json")
       .then(function(r){ return r.json(); })
